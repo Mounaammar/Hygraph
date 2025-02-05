@@ -881,29 +881,7 @@ class HyGraph:
         else:
             print(f"Subgraph '{subgraph_id}' does not exist.")
 
-    def create_similarity_edges(self, similarity_threshold):
-        ts_nodes = [node for node in self.graph.nodes(data=True) if isinstance(node[1]['data'], TSNode)]
-        edge_id = self.id_generator.generate_edge_id()
-
-        for i in range(len(ts_nodes)):
-            for j in range(i + 1, len(ts_nodes)):
-                ts1 = ts_nodes[i][1]['data'].series.data.values
-                ts2 = ts_nodes[j][1]['data'].series.data.values
-                distance, _ = fastdtw(ts1, ts2, dist=euclidean)
-
-                if distance <= similarity_threshold:
-                    start_time = datetime.now()
-                    edge = Edge(oid=edge_id, source=ts_nodes[i][1]['data'], target=ts_nodes[j][1]['data'], label='similarTo', start_time=start_time)
-                    self.add_edge(edge)
-
-                    # Calculate and add the degree of similarity over time as a property
-                    similarity_over_time = [distance] * len(ts1)
-                    timestamps = pd.date_range(start=start_time, periods=len(similarity_over_time), freq='D')
-                    tsid = self.id_generator.generate_timeseries_id()
-                    time_series = TimeSeries(tsid, timestamps, ['similarity'], [similarity_over_time])
-                    self.time_series[tsid] = time_series
-                    self.add_property('edge', edge.oid, 'degree_similarity_over_time', tsid)
-
+    
     def append_time_series(self, tsid, date, value):
         if tsid in self.time_series:
             self.time_series[tsid].append_data(date, value)

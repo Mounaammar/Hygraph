@@ -10,6 +10,7 @@ from hygraph import HyGraph, Edge, PGNode, HyGraphQuery
 from fileProcessing import NodeFileHandler, EdgeFileHandler, HyGraphFileLoader
 import os
 
+from hygraph_core.hygraph_universal_pipeline import HyGraphUniversalPipeline
 from hygraph_core.timeseries_operators import TimeSeries, TimeSeriesMetadata
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,6 +28,52 @@ def count_edges_in_subgraph(subgraph, date):
 
 
 if __name__ == "__main__":
+    hy = HyGraph()
+
+    # 2) Create a universal pipeline
+    pipeline = HyGraphUniversalPipeline(hy)
+
+    # Define the CSV field mappings for nodes & edges:
+    # Suppose your node CSV has columns: 'id','start_time','end_time','num_bikes_available',...
+    # and your edge CSV has columns: 'id','source_id','target_id','start_time','end_time','num_rides',...
+    node_field_map = {
+        "oid": "station_id",  # CSV "id" -> node's internal ID
+        "start_time": "start",
+        "end_time": "end"
+    }
+    edge_field_map = {
+        "oid": "id",  # CSV "id" -> edge's internal ID
+        "source_id": "from",
+        "target_id": "to",
+        "start_time": "start",
+        "end_time": "end"
+    }
+
+    # If certain columns are time-series data for each row:
+    node_ts_columns = ["num_bikes_available", "num_docks_disabled","num_bikes_disabled","num_bikes_available"]
+    edge_ts_columns = ["num_rides", "member_rides","casual_rides","classic_rides","electric_rides","active_trips"]
+
+    # 3) Configure pipeline for JSON
+    pipeline.configure_for_json(
+        node_json_path=os.path.join(base_dir, 'inputFiles', 'nodes'),
+        edge_json_path=os.path.join(base_dir, 'inputFiles', 'edges'),
+        node_field_map=node_field_map,
+        edge_field_map=edge_field_map
+    )
+    pipeline.run_pipeline()
+
+    # Now your HyGraph has nodes/edges/subgraphs from both CSV & JSON
+    # (if you configured both). You can do queries or display again:
+    hy.display()
+
+    target_name = "Whitehall St & Bridge St"
+
+    # Using the built-in method get_nodes_by_static_property(property_name, condition):
+    matching_nodes = hy.get_nodes_by_static_property(
+        property_name="name",
+        condition=lambda static_prop: static_prop.value == target_name
+    )
+
     '''nodes_folder = os.path.join(base_dir, 'inputFiles', 'nodes')
     edges_folder = os.path.join(base_dir, 'inputFiles', 'edges')
     subgraph_folder = os.path.join(base_dir, 'inputFiles', 'subgraphs')
@@ -93,7 +140,7 @@ if __name__ == "__main__":
     # Add a time series in the hygraph
     graph_element.add_temporal_property('temperature', timestamps, variables, data)'''
 
-    hygraph = HyGraph()  # Initialize an empty HyGraph instance
+    '''hygraph = HyGraph()  # Initialize an empty HyGraph instance
     #Add mock PGNode stations with static properties including 'capacity'
     node1 = hygraph.add_pgnode(oid=1, label='Station', start_time=datetime.now()- timedelta(hours=7),
                                properties={'capacity': 100, 'name': 'Station A'})
@@ -178,7 +225,7 @@ if __name__ == "__main__":
     ts_in_degree = node_degree_history = hygraph.get_node_degree_over_time(node_id=1, degree_type='in',
                                                                            return_type='history')
     ts_out_degree = hygraph.get_node_degree_over_time(node_id=1, degree_type='out', return_type='history')
-    ts_in_degree.aggregate_time_series_cumulative(ts_out_degree,'both_degree').display_time_series()
+    ts_in_degree.aggregate_time_series_cumulative(ts_out_degree,'both_degree').display_time_series()'''
 
     '''subgraph_original=hygraph.add_subgraph('manhattan', label='Manhattan Subgraph',start_time=datetime(2023, 1, 1))
     subgraph_original['data'].add_static_property("text",230,hygraph)
@@ -335,7 +382,7 @@ if __name__ == "__main__":
     plt.show()'''
 
 
-    def create_trip_series(start_time, length=10):
+    '''   def create_trip_series(start_time, length=10):
         timestamps = [start_time + timedelta(minutes=5 * i) for i in range(length)]
         trip_counts = np.random.randint(5, 20, size=length)
         data = trip_counts.reshape((length, 1))  # Reshape to (length, 1)
@@ -371,5 +418,5 @@ if __name__ == "__main__":
     print("Correlation Coefficient:", ts4.correlation_coefficient(ts3))
     print("Cosine Similarity:", ts3.cosine_similarity(ts4))
     print("DTW Distance:", ts4.dynamic_time_warping(ts3,'trip_count'))
-    print('DTW MUltivariate', ts1.dtw_independent_multivariate(ts1))
+    print('DTW MUltivariate', ts1.dtw_independent_multivariate(ts1))'''
 
