@@ -23,7 +23,6 @@ class HyGraphUniversalPipeline:
         self,
         nodes_folder: str,
         edges_folder: str,
-        membership_file: str = None,
         node_field_map: dict = None,
         edge_field_map: dict = None,
         max_rows_per_batch: int = 50_000
@@ -32,7 +31,6 @@ class HyGraphUniversalPipeline:
             hygraph=self.hygraph,
             nodes_folder=nodes_folder,
             edges_folder=edges_folder,
-            membership_file=membership_file,
             node_field_map=node_field_map,
             edge_field_map=edge_field_map,
             max_rows_per_batch=max_rows_per_batch
@@ -65,5 +63,5 @@ class HyGraphUniversalPipeline:
         self.loader.run_pipeline()
 
         # Could display or do final post-processing
-        self.hygraph.display()
+        #self.hygraph.display()
         print("HyGraph pipeline run complete!")

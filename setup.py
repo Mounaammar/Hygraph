@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='hygraph_core',       # Name of your package
-    version='0.3.0',                 # Version of your package
+    version='0.3.8.5',                 # Version of your package
     description='A package for managing and analyzing HyGraph data',
     long_description=open('README.md').read(),  # Read the content of README.md
     long_description_content_type='text/markdown',
@@ -21,7 +21,6 @@ setup(
         'scikit-learn',  # Optional, for advanced similarity metrics or clustering (cosine similarity, etc.)
         'igraph',
         'statsmodels',
-        'abc',
         'ijson',
         'polars'
     ],

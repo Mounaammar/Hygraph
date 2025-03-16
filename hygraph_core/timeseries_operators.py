@@ -58,7 +58,7 @@ class TimeSeries:
         self.data = xr.concat([self.data, new_data], dim='time')
 
     def get_id(self):
-        return
+        return self.tsid
 
     def subset_time_series(self, start_time, end_time):
         """

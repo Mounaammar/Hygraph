@@ -56,7 +56,7 @@ class GraphElement:
         self.temporal_properties[name] = temporal_property
         # Now call the shared function to update the graph
         self.update_graph_element(hygraph)
-        print(f"Temporal property '{name}' added with time series ID {timeseries.tsid}")
+        #print(f"Temporal property '{name}' added with time series ID {timeseries.tsid}")
 
     def get_static_property(self, name):
         if name in self.static_properties:
@@ -175,7 +175,7 @@ class GraphElement:
                                    properties={**self.static_properties, **self.temporal_properties},
                                    membership=getattr(self, 'membership', None),
                                    type="PGNode")
-            print(f"Updated PGNode {self.oid} in the graph.")
+            #print(f"Updated PGNode {self.oid} in the graph.")
         else:
             # Update a PGEdge in the graph
             for u, v, key, edge_data in hygraph.graph.edges(data=True, keys=True):
@@ -189,7 +189,7 @@ class GraphElement:
                                            properties={**self.static_properties, **self.temporal_properties},
                                            membership=getattr(self, 'membership', None),
                                            type="PGEdge")
-                    print(f"Updated PGEdge {self.oid} from {u} to {v} in the graph.")
+                    #print(f"Updated PGEdge {self.oid} from {u} to {v} in the graph.")
                     break
 
 
@@ -401,7 +401,7 @@ class TemporalProperty:
         # Use the append_data method, which handles timestamp checks
         try:
             time_series.append_data(timestamp, value)
-            print(f"Value {value} added at timestamp {timestamp} to time series {self.time_series_id}.")
+            #print(f"Value {value} added at timestamp {timestamp} to time series {self.time_series_id}.")
         except ValueError as e:
             print(f"Error adding value: {e}")
 

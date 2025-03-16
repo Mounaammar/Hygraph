@@ -40,32 +40,7 @@ EDGES_SCHEMA = {
     "end_time": pl.Utf8,
 }
 
-SUBGRAPHS_SCHEMA = {
-    "id": pl.Utf8,
-    "start_time": pl.Utf8,
-    "end_time": pl.Utf8,
-    # Additional subgraph columns
-}
 
-MEMBERSHIP_SCHEMA = {
-    "id": pl.Utf8,
-    "subgraph_id": pl.Utf8,
-    "timestamp": pl.Utf8,   # We'll parse the date ourselves
-    "action": pl.Utf8
-}
-
-
-def parse_iso_date(date_str: str) -> Optional[datetime]:
-    """
-    Minimal date parser for ISO-like strings, e.g. "2024-05-16T00:00:00".
-    Adjust if your CSV uses a different date format.
-    """
-    if not date_str:
-        return None
-    try:
-        return datetime.fromisoformat(date_str)
-    except ValueError:
-        return None
 
 
 class HyGraphCSVLoader:
@@ -81,9 +56,6 @@ class HyGraphCSVLoader:
         hygraph: HyGraph,
         nodes_folder: str,
         edges_folder: str,
-        subgraphs_folder: str,
-        edges_membership_path: str,
-        nodes_membership_path: str,
         max_rows_per_batch: int = 50_000,
         # Below are new:
         node_field_map: Dict[str, str] = None,
@@ -133,9 +105,7 @@ class HyGraphCSVLoader:
         self.hygraph = hygraph
         self.nodes_folder = nodes_folder
         self.edges_folder = edges_folder
-        self.subgraphs_folder = subgraphs_folder
-        self.edges_membership_path = edges_membership_path
-        self.nodes_membership_path = nodes_membership_path
+
         self.max_rows_per_batch = max_rows_per_batch
 
         self.node_field_map = node_field_map or {}
@@ -160,11 +130,10 @@ class HyGraphCSVLoader:
         print("========== Starting ETL Pipeline (with Schema) ==========")
         self.load_all_nodes()
         self.load_all_edges()
-        self.load_all_subgraphs()
+
 
         # For membership, typically smaller CSVs—but we still do chunked to be safe
-        self.process_membership_data(self.edges_membership_path, element_type="edge")
-        self.process_membership_data(self.nodes_membership_path, element_type="node")
+
 
         # Optionally, you might finalize or do post-processing
         self.finalize_pipeline()
@@ -172,7 +141,7 @@ class HyGraphCSVLoader:
 
     def finalize_pipeline(self):
         print("\nFinalizing the pipeline... current HyGraph state:")
-        self.hygraph.display()
+       # self.hygraph.display()
         # Additional steps (e.g., indexing, queries) can be done here.
 
     ########################
@@ -205,7 +174,7 @@ class HyGraphCSVLoader:
         offset = 0
         batch_idx = 0
         while True:
-            df = scan.limit(self.max_rows_per_batch).offset(offset).collect()
+            df = scan.slice(offset, self.max_rows_per_batch).collect()
             if df.height == 0:
                 break  # No more rows
             batch_idx += 1
@@ -230,8 +199,10 @@ class HyGraphCSVLoader:
 
         external_id = str(row.get(oid_col, "")) or f"node_{id(row)}"
 
-        start_time = self._safe_parse_date(row.get(start_col), default=datetime.now())
-        end_time = self._safe_parse_date(row.get(end_col), default=FAR_FUTURE_DATE)
+        #start_time = self._safe_parse_date(row.get(start_col), default=datetime.now())
+        #end_time = self._safe_parse_date(row.get(end_col), default=FAR_FUTURE_DATE)
+        start_time = str(row.get(start_col, ""))  # do NOT parse
+        end_time = str(row.get(end_col, ""))
 
         # Build leftover properties from columns not in [oid_col, start_col, end_col]
         known_cols = {oid_col, start_col, end_col}
@@ -314,7 +285,7 @@ class HyGraphCSVLoader:
         offset = 0
         batch_idx = 0
         while True:
-            df = scan.limit(self.max_rows_per_batch).offset(offset).collect()
+            df = scan.slice(offset, self.max_rows_per_batch).collect()
             if df.height == 0:
                 break
             batch_idx += 1
@@ -337,9 +308,10 @@ class HyGraphCSVLoader:
         edge_id = str(row.get(oid_col, "")) or f"edge_{id(row)}"
         source_id = str(row.get(src_col, ""))
         target_id = str(row.get(tgt_col, ""))
-        start_time = self._safe_parse_date(row.get(st_col), default=datetime.now())
-        end_time = self._safe_parse_date(row.get(ed_col), default=FAR_FUTURE_DATE)
-
+        #start_time = self._safe_parse_date(row.get(st_col), default=datetime.now())
+        #end_time = self._safe_parse_date(row.get(ed_col), default=FAR_FUTURE_DATE)
+        start_time = str(row.get(st_col, ""))  # do NOT parse
+        end_time = str(row.get(ed_col, ""))
         # leftover properties
         known_cols = {oid_col, src_col, tgt_col, st_col, ed_col}
         props = {}
@@ -413,114 +385,7 @@ class HyGraphCSVLoader:
                 else:
                     existing_ts.append_data(timestamp, val)
 
-    ########################
-    #    LOAD SUBGRAPHS    #
-    ########################
 
-    def load_all_subgraphs(self):
-        subgraph_files = [
-            f for f in os.listdir(self.subgraphs_folder)
-            if f.endswith(".csv")
-        ]
-        for file_name in subgraph_files:
-            label = file_name.replace(".csv", "")
-            file_path = os.path.join(self.subgraphs_folder, file_name)
-            self.load_subgraphs_from_csv(file_path, label)
-
-    def load_subgraphs_from_csv(self, csv_path: str, label: str):
-        print(f"\n[Subgraphs] Loading from {csv_path} with label={label}")
-        scan = pl.scan_csv(csv_path, dtypes=SUBGRAPHS_SCHEMA)
-
-        offset = 0
-        batch_idx = 0
-        while True:
-            df = scan.limit(self.max_rows_per_batch).offset(offset).collect()
-            if df.height == 0:
-                break
-            batch_idx += 1
-            print(f"   -> Processing Subgraph Batch #{batch_idx} with {df.height} rows (offset={offset})")
-            self._process_subgraph_batch(df, label)
-            offset += df.height
-
-    def _process_subgraph_batch(self, df: pl.DataFrame, label: str):
-        for row in df.iter_rows(named=True):
-            subgraph_id = str(row["id"])
-            start_time = self._safe_parse_date(row.get("start_time"), default=datetime.now())
-            end_time = self._safe_parse_date(row.get("end_time"), default=FAR_FUTURE_DATE)
-
-            # Additional properties
-            props = {
-                k: v for k, v in row.items()
-                if k not in ["id", "start_time", "end_time"]
-            }
-            props["label"] = label
-
-            self.hygraph.add_subgraph(
-                subgraph_id=subgraph_id,
-                label=label,
-                properties=props,
-                start_time=start_time,
-                end_time=end_time
-            )
-
-    ########################
-    #   MEMBERSHIP LOGIC   #
-    ########################
-
-    def process_membership_data(self, membership_csv: str, element_type: str):
-        """
-        A membership approach: chunk-read the CSV with Polars,
-        parse each row -> call hygraph.add_membership or remove_membership.
-        """
-        if not os.path.isfile(membership_csv):
-            print(f"[Membership] File not found: {membership_csv} (skipping).")
-            return
-
-        # Use MEMBERSHIP_SCHEMA
-        print(f"\n[Membership] Processing {membership_csv} for element_type={element_type}")
-        scan = pl.scan_csv(membership_csv, dtypes=MEMBERSHIP_SCHEMA)
-
-        offset = 0
-        batch_idx = 0
-        while True:
-            df = scan.limit(self.max_rows_per_batch).offset(offset).collect()
-            if df.height == 0:
-                break
-            batch_idx += 1
-            print(f"   -> Membership Batch #{batch_idx} with {df.height} rows")
-            self._process_membership_batch(df, element_type)
-            offset += df.height
-
-    def _process_membership_batch(self, df: pl.DataFrame, element_type: str):
-        # Sort by timestamp for chronological updates
-        df = df.sort(by="timestamp")
-
-        for row in df.iter_rows(named=True):
-            external_ids = str(row["id"]).split()
-            subgraph_ids = str(row["subgraph_id"]).split()
-            timestamp = self._safe_parse_date(row["timestamp"], default=datetime.now())
-            action = str(row["action"]).strip().lower()
-
-            for external_id in external_ids:
-                external_id = external_id.strip()
-                if element_type == "node":
-                    if external_id not in self.hygraph.graph.nodes:
-                        print(f"   [WARN] Node {external_id} not found, skipping membership.")
-                        continue
-                elif element_type == "edge":
-                    if not self._edge_exists(external_id):
-                        print(f"   [WARN] Edge {external_id} not found, skipping membership.")
-                        continue
-                else:
-                    print(f"   [WARN] Unrecognized element_type={element_type}, skipping membership.")
-                    continue
-
-                if action == "add":
-                    self.hygraph.add_membership(external_id, timestamp, subgraph_ids, element_type)
-                elif action == "remove":
-                    self.hygraph.remove_membership(external_id, timestamp, subgraph_ids, element_type)
-                else:
-                    print(f"   [WARN] Unknown action={action} for {element_type}={external_id}")
 
     def _edge_exists(self, edge_id: str) -> bool:
         """

@@ -93,11 +93,11 @@ class HyGraph:
                             data=pgedge,
                             type="PGEdge")
 
-        print(f"PGEdge {oid} from {source} to {target} with label '{label}' successfully created.")
+       # print(f"PGEdge {oid} from {source} to {target} with label '{label}' successfully created.")
         # Mark the graph as updated
         self.set_updated()
         # Update node degree time series
-        self._update_node_degree_time_series(source, target, operation='add', timestamp=start_time)
+       # self._update_node_degree_time_series(source, target, operation='add', timestamp=start_time)
 
         return pgedge
 
@@ -144,8 +144,8 @@ class HyGraph:
         # Mark the graph as updated
         self.set_updated()
         # Call function to initialize in_degree and out_degree as TimeSeries within metadata
-        self.initialize_degree_timeseries(oid, start_time)
-        print(f"PGNode {oid} with label '{label}' successfully created and end_time '{pgnode.end_time}'.")
+        #self.initialize_degree_timeseries(oid, start_time)
+        #print(f"PGNode {oid} with label '{label}' successfully created and end_time '{pgnode.end_time}'.")
 
 
         return pgnode
@@ -175,8 +175,8 @@ class HyGraph:
                             end_time=end_time,
                             type="TSNode")
         # Call function to initialize in_degree and out_degree as TimeSeries within metadata
-        self.initialize_degree_timeseries(oid, start_time)
-        print(f"TSNode {oid} with label '{label}' successfully created.")
+        #self.initialize_degree_timeseries(oid, start_time)
+       # print(f"TSNode {oid} with label '{label}' successfully created.")
         # Mark the graph as updated
         self.set_updated()
 
@@ -216,12 +216,12 @@ class HyGraph:
                             data=tsedge,
                             type="TSEdge")
 
-        print(f"TSEdge {oid} from {source} to {target} with label '{label}' successfully created.")
+        #print(f"TSEdge {oid} from {source} to {target} with label '{label}' successfully created.")
         # Mark the graph as updated
         self.set_updated()
         start_time=time_series.first_timestamp()
         # Update node degree time series
-        self._update_node_degree_time_series(tsedge.source, tsedge.target, operation='add', timestamp=start_time)
+        #self._update_node_degree_time_series(tsedge.source, tsedge.target, operation='add', timestamp=start_time)
 
         return tsedge
 
@@ -277,27 +277,7 @@ class HyGraph:
                 else:
                     # Default to static property if type is not specified
                     subgraph_obj.add_static_property(prop_name, prop_value, self)
-        # **Update node memberships using add_membership**
-        for node_id in subgraph_view.nodes():
-            # Assuming 'TSNode' or 'PGNode' depending on your node type
-            element_type = 'node' # You may need to adjust this line
-            self.add_membership(
-                element_id=node_id,
-                timestamp=start_time,
-                subgraph_ids=[subgraph_id],
-                element_type=element_type
-            )
 
-        # **Update edge memberships using add_membership**
-        for u, v, k in subgraph_view.edges(keys=True):
-            edge = self.get_edge_by_id(k)
-            element_type = 'edge'  # You may need to adjust this line
-            self.add_membership(
-                element_id=k,
-                timestamp=start_time,
-                subgraph_ids=[subgraph_id],
-                element_type=element_type
-            )
         # Store the subgraph view and Subgraph object in the subgraphs dictionary
         self.subgraphs[subgraph_id] = {
             'view': subgraph_view,  # The NetworkX subgraph view
@@ -358,13 +338,6 @@ class HyGraph:
                 raise ValueError(f"Subgraph with ID {oid} does not exist.")
             return self.subgraphs[oid]['data']
 
-    def add_property(self, element_type, oid, property_key, value):
-        element = self.get_element(element_type, oid)
-        if property_key not in element.properties:
-            element.properties[property_key] = value
-            print(f"addProperty {element.properties}")
-        else:
-            print(f"Property {property_key} already exists for element with ID {oid}.")
 
     def add_membership(self, element_id, timestamp, subgraph_ids,element_type):
         """
@@ -387,7 +360,7 @@ class HyGraph:
             time_series = TimeSeries(tsid, [timestamp], ['membership'], [[membership_string]], metadata)
             self.time_series[tsid] = time_series
             element.membership = tsid
-            print(f"TimeSeries created for: {element_type} {element_id}: {time_series}")
+            #print(f"TimeSeries created for: {element_type} {element_id}: {time_series}")
         else:
             tsid = element.membership
             time_series = self.time_series[tsid]
@@ -498,7 +471,7 @@ class HyGraph:
         # Store the time series in the hygraph
         self.time_series[time_series_id] = new_time_series
 
-        print(f"New time series added with ID {time_series_id}")
+        #print(f"New time series added with ID {time_series_id}")
         return new_time_series
 
 
@@ -859,7 +832,7 @@ class HyGraph:
         # Notify observers
         self.set_updated()
         edge.notify()
-        self._update_node_degree_time_series(edge.source, edge.target, operation='remove', timestamp=end_time)
+        #self._update_node_degree_time_series(edge.source, edge.target, operation='remove', timestamp=end_time)
 
 
     def delete_subgraph(self, subgraph_id, end_time=None):
@@ -1056,117 +1029,330 @@ class HyGraph:
 
 
     #generate timeseries from graph
-
     def create_time_series_from_graph(self, query):
         """
-    Create time series data for nodes, edges, or subgraphs based on a provided query.
+        Create time series data for graph elements (nodes, edges, or subgraphs) based on a provided query.
 
-    Parameters:
-    - query (dict): A dictionary containing filters and configuration for time series creation.
-        - element_type (str): 'node', 'edge', or 'subgraph'.
-        - subgraph_id (str, optional): The specific subgraph ID to process.
-        - subgraph_label (str, optional): The label to match subgraphs.
-        - node_filter (function, optional): A function to filter nodes.
-        - edge_filter (function, optional): A function to filter edges.
-        - time_series_config (dict): Configuration for time series creation, including:
-            - start_date (datetime): The start date for the time series.
-            - end_date (datetime, optional): The end date for the time series.
-            - attribute (str): The attribute to track in the time series.
-            - aggregate_function (function): The function to aggregate values.
-            - direction (str, optional): Direction for edge aggregation ('in', 'out', 'both').
-            - freq (str): The frequency for the time series (e.g., 'D', 'M').
-    """
+        Query dictionary supports:
+          - 'element_type': 'node', 'edge', or 'subgraph'
+          - 'node_filter': function(node_data) -> bool
+          - 'edge_filter': function(edge_data) -> bool
+          - 'subgraph_id' or 'subgraph_label' or 'subgraph_filter' (for subgraphs)
+          - 'aggregation': Boolean flag; for edge elements, if True the system aggregates edges into a super edge.
+          - 'target': For node TS extraction, indicates which edge direction to consider ('source', 'target', or 'both').
+          - 'node_settings': Dict (e.g., {'include_edges': [list of edge labels], 'aggregate_edges': True})
+          - 'time_series_config': Dict with keys:
+                'start_date'        : datetime for TS range (if not using actual timestamps)
+                'end_date'          : datetime for TS range (if not using actual timestamps)
+                'freq'              : Frequency string (e.g., 'D' for daily, 'M' for monthly)
+                'attribute'         : Base name for the dynamic property (e.g., 'number_connections')
+                'aggregate_function': Function with signature (hygraph, element_type, oid, attribute, dt) -> numeric value
+                'direction'         : For edge aggregation ('in', 'out', or 'both')
+                'use_actual_timestamps': Boolean flag; if True, TS is built using collected event timestamps.
+        """
         element_type = query.get('element_type', 'node')
-        ts_config = query.get('time_series_config')
+        ts_config = query.get('time_series_config', {})
 
         if element_type == 'node':
-            # Parse query to get node filter and edge filter
-            node_filter = query.get('node_filter')
-            edge_filter = query.get('edge_filter')
-
-            # Filter nodes based on the node_filter
-            selected_nodes = self.filter_nodes(node_filter, edge_filter)
-            # Process each selected node to create time series
-            for node_data in selected_nodes:
-
-                data = node_data['data']
-                attribute = self.query['time_series_config']['attribute']
-                tsid = data.properties.get(attribute)
-                if tsid and tsid in self.time_series:
-                    print(f"Appending to existing time series {tsid} for node {data.oid}")
-                    current_value = self.query['time_series_config']['aggregate_function'](
-                        self, 'node', data.oid, attribute, datetime.now()
-                    )
-                    self.append_time_series(tsid, datetime.now(), current_value)
-                else:
-                    print(f"Creating new time series for node {data.oid}")
-                    self.process_element_for_time_series(node_data, ts_config, element_type='node')
-
+            self._process_nodes_for_ts(query, ts_config)
         elif element_type == 'subgraph':
-            # Process subgraphs based on subgraph_id or subgraph_label
-            subgraph_id = query.get('subgraph_id')
-            subgraph_label = query.get('subgraph_label')
-
-            if subgraph_id:
-                # Process a specific subgraph by ID
-                subgraphs = [self.get_element('subgraph', subgraph_id)]
-            elif subgraph_label:
-                # Process all subgraphs with the given label
-                subgraphs = [subgraph['data'] for subgraph in self.subgraphs.values() if subgraph['data'].label == subgraph_label]
-            else:
-                raise ValueError("Subgraph ID or label must be provided for subgraph time series generation.")
-
-            for subgraph in subgraphs:
-                self.process_element_for_time_series(subgraph, ts_config, element_type='subgraph')
-
+            self._process_subgraphs_for_ts(query, ts_config)
+        elif element_type == 'edge':
+            self._process_edges_for_ts(query, ts_config)
         else:
-            raise ValueError("Unsupported element type for time series generation: {}".format(element_type))
+            raise ValueError(f"Unsupported element type for time series generation: {element_type}")
 
     def filter_nodes(self, node_filter, edge_filter):
-        # This function now considers both node properties.py and edge connections
+        """
+        Filters nodes from the HyGraph based on a node_filter and an optional edge_filter.
+
+        Parameters:
+          - node_filter: Function that takes node data (the dictionary from self.graph.nodes) and returns True if the node should be included.
+          - edge_filter: (Optional) Function that takes an edge dictionary and returns True if the edge satisfies the criteria.
+
+        Returns:
+          - A list of dictionaries containing the node data under the key 'data'.
+        """
         filtered_nodes = []
-        for node_id, node_data in self.graph.nodes(data=True):
-            if node_filter(node_data):
-                # Check edges if an edge filter is specified
+        for node_id, data in self.graph.nodes(data=True):
+            # data is expected to have a 'data' field holding the actual node object.
+            if node_filter(data):
                 if edge_filter:
-                    connected_edges = self.graph.edges(node_id, data=True)
-                    if any(edge_filter(edge) for _, _, edge in connected_edges):
-                        filtered_nodes.append(node_data)
+                    # Check if at least one incident edge satisfies the edge_filter.
+                    incident_edges = self.graph.edges(node_id, keys=True, data=True)
+                    if any(edge_filter({'data': edata}) for _, _, _, edata in incident_edges):
+                        filtered_nodes.append({'data': data['data']})
                 else:
-                    # No edge filter provided, add node based on node filter alone
-                    filtered_nodes.append(node_data)
+                    filtered_nodes.append({'data': data['data']})
         return filtered_nodes
 
-    def process_element_for_time_series(self, element_data, ts_config, element_type='node'):
-        element = element_data['data']
-        #  start_date = ts_config['start_date']
-        #end_date = ts_config.get('end_date', None)
-        attribute = ts_config['attribute']
-        aggregate_function = ts_config['aggregate_function']
-        #freq = ts_config.get('freq', 'D')
-        element_start_time = parse_datetime(element.start_time) if isinstance(element.start_time, str) else element.start_time
-        element_end_time = parse_datetime(element.end_time) if isinstance(element.end_time, str) else element.end_time
-        # Check if the element is within the time range
-        #if pd.isna(end_date):
-        #   end_date =datetime.now()
-        #if not (element_start_time <= end_date and element_end_time >= start_date):
-        #   print(f"Skipping {element_type} {element.oid} as it is outside the query time range.")
-        #   return
-        #date_range = pd.date_range(start=start_date, end=end_date, freq=freq)
-        values = []
-        last_value = None
-        # for date in date_range:
-        #   current_value = aggregate_function(self, element_type, element.oid, attribute, date)
-        #   values.append((date, current_value))
-        if values:
-            timestamps, data_values = zip(*values)
-            reshaped_data_values = np.array(data_values)[:, np.newaxis]
-            tsid = self.id_generator.generate_timeseries_id()
-            metadata = TimeSeriesMetadata(element.oid, element_type)
-            time_series = TimeSeries(tsid, timestamps, [attribute], reshaped_data_values, metadata)
+    def _aggregate_edges_for_node(self, node_obj, target, node_settings, ts_config):
+        """
+        Aggregate incident edges of a node based on the provided settings and aggregator function.
 
-            self.time_series[tsid] = time_series
-            self.add_property(element_type, element.oid, attribute, tsid)
+        Parameters:
+          - node_obj: The node object (e.g., a PGNode) from which to aggregate edges.
+          - target: String indicating which edges to consider ('source', 'target', or 'both').
+          - node_settings: Dictionary that may contain 'include_edges' (a list of edge labels to include).
+          - ts_config: Time series configuration dictionary; must contain 'aggregate_function' and 'attribute'.
+
+        Returns:
+          - A numeric value (or tuple) that is the aggregation result of the eligible edges.
+        """
+        include_edges = node_settings.get('include_edges', [])
+        node_id = node_obj.oid
+
+        # Select edges based on target.
+        if target == 'source':
+            edges = self.graph.out_edges(node_id, keys=True, data=True)
+        elif target == 'target':
+            edges = self.graph.in_edges(node_id, keys=True, data=True)
+        else:
+            edges = self.graph.edges(node_id, keys=True, data=True)
+
+        aggregator = ts_config['aggregate_function']
+        base_attribute = ts_config.get('attribute', 'default_attribute')
+
+        # Initialize aggregated value by sampling an eligible edge.
+        agg_value = None
+        for u, v, key, data in edges:
+            edge_obj = data['data']
+            if include_edges and edge_obj.label not in include_edges:
+                continue
+            sample = aggregator(self, 'edge', key, base_attribute, datetime.now())
+            if isinstance(sample, tuple):
+                agg_value = tuple(0 for _ in sample)
+            else:
+                agg_value = 0
+            break  # Initialization done.
+
+        if agg_value is None:
+            # No eligible edges found.
+            return 0
+
+        # Sum aggregator values over all eligible edges.
+        for u, v, key, data in edges:
+            edge_obj = data['data']
+            if include_edges and edge_obj.label not in include_edges:
+                continue
+            edge_val = aggregator(self, 'edge', key, base_attribute, datetime.now())
+            if isinstance(edge_val, tuple):
+                agg_value = tuple(sum(x) for x in zip(agg_value, edge_val))
+            else:
+                agg_value += edge_val
+        return agg_value
+    def _process_nodes_for_ts(self, query, ts_config):
+        node_filter = query.get('node_filter', lambda node: True)
+        edge_filter = query.get('edge_filter', None)
+        selected_nodes = self.filter_nodes(node_filter, edge_filter)
+        node_settings = query.get('node_settings', {})
+        aggregate_edges_flag = node_settings.get('aggregate_edges', False)
+        target = query.get('target', None)
+        base_attribute = ts_config.get('attribute', 'default_attribute')
+
+        for node_data in selected_nodes:
+            node_obj = node_data['data']
+            existing_ts_id = node_obj.properties.get(base_attribute)
+            if existing_ts_id and existing_ts_id in self.time_series:
+                # TS already exists – append a new value at the current timestamp.
+                current_value = ts_config['aggregate_function'](self, 'node', node_obj.oid, base_attribute,
+                                                                datetime.now())
+                self.append_time_series(existing_ts_id, datetime.now(), current_value)
+            else:
+                if aggregate_edges_flag and target:
+                    # If aggregation is enabled, compute an aggregated value from incident edges.
+                    agg_val = self._aggregate_edges_for_node(node_obj, target, node_settings, ts_config)
+                    new_ts = self.add_time_series([datetime.now()], [base_attribute], [[agg_val]])
+                    node_obj.add_temporal_property(base_attribute, new_ts, self)
+                else:
+                    # Otherwise, compute a time series over the specified time range.
+                    self._compute_ts_for_element(node_obj, ts_config, element_type='node')
+
+    def _process_subgraphs_for_ts(self, query, ts_config):
+        subgraph_id = query.get('subgraph_id')
+        subgraph_label = query.get('subgraph_label')
+        subgraph_filter = query.get('subgraph_filter', lambda s: True)
+
+        if subgraph_id:
+            subgraphs = [self.get_element('subgraph', subgraph_id)]
+        elif subgraph_label:
+            subgraphs = [s['data'] for s in self.subgraphs.values() if s['data'].label == subgraph_label]
+        else:
+            subgraphs = [s['data'] for s in self.subgraphs.values()]
+
+        filtered_subgraphs = [sg for sg in subgraphs if subgraph_filter(sg)]
+        if not filtered_subgraphs:
+            print("No subgraphs matched the provided filter criteria.")
+            return
+
+        for subgraph_obj in filtered_subgraphs:
+            self._compute_ts_for_element(subgraph_obj, ts_config, element_type='subgraph')
+
+    def _process_edges_for_ts(self, query, ts_config):
+        """
+        Process edge elements for time series generation.
+        If 'aggregation' is True, then edges are grouped by (source, target, label)
+        and a "super edge" is created. The aggregated TS is attached as a dynamic property
+        on the super edge.
+        """
+        edge_filter = query.get('edge_filter', lambda edge: True)
+        aggregation_flag = query.get('aggregation', False)
+        selected_edges = [(u, v, key, data) for u, v, key, data in self.graph.edges(keys=True, data=True)
+                          if edge_filter(data)]
+
+        if aggregation_flag:
+            # Group edges by a grouping key; default group-by: (source, target, label)
+            group_by_keys = query.get('edge_settings', {}).get('group_by', ['source', 'target', 'label'])
+            groups = {}
+            for u, v, key, data in selected_edges:
+                edge_obj = data['data']
+                # For now, we assume grouping by source, target, and label.
+                group_key = (u, v, edge_obj.label)
+                groups.setdefault(group_key, []).append((u, v, key, data))
+
+            for group_key, edges in groups.items():
+                # Compute aggregated time series for the group.
+                new_ts = self._compute_ts_for_edge_group(edges, ts_config)
+                if new_ts is None:
+                    continue
+                # Create a new super edge.
+                new_oid = f"super_{group_key[0]}_{group_key[1]}_{group_key[2]}"
+                # For start_time, we take the minimum start time among edges.
+                edge_start_times = [data.get('start_time') for _, _, _, data in edges if
+                                    data.get('start_time') is not None]
+                if edge_start_times:
+                    start_time = min(edge_start_times)
+                else:
+                    start_time = datetime.now()
+                new_edge = self.add_pgedge(new_oid, group_key[0], group_key[1], group_key[2], start_time, None, properties={})
+                # Attach the aggregated TS as a dynamic property on the super edge.
+                new_edge.add_temporal_property( ts_config['attribute'], new_ts, self)
+
+        else:
+            # Without aggregation: Process each edge individually.
+            for u, v, key, data in selected_edges:
+                edge_obj = data['data']
+                self._compute_ts_for_element(edge_obj, ts_config, element_type='edge')
+
+    def _compute_ts_for_element(self, element_obj, ts_config, element_type):
+        """
+        Compute a time series for a given element (node, edge, or subgraph) using either
+        actual event timestamps or a generated date range.
+        """
+
+        base_attribute = ts_config.get('attribute', 'default_attribute')
+        agg_func = ts_config.get('aggregate_function')
+
+        # Decide on timestamps: if use_actual_timestamps is True, collect them from events.
+        if ts_config.get('use_actual_timestamps', False):
+            timestamps = self._collect_timestamps_for_element(element_obj, element_type)
+            if not timestamps:
+                # Fallback to generated range.
+                start_date = ts_config.get('start_date', datetime.now())
+                end_date = ts_config.get('end_date', datetime.now())
+                freq = ts_config.get('freq', 'D')
+                timestamps = list(pd.date_range(start=start_date, end=end_date, freq=freq))
+        else:
+            start_date = ts_config.get('start_date', datetime.now())
+            end_date = ts_config.get('end_date', datetime.now())
+            freq = ts_config.get('freq', 'D')
+            timestamps = list(pd.date_range(start=start_date, end=end_date, freq=freq))
+
+        values = []
+        # Extract the element's global start_time and end_time
+        st = getattr(element_obj, 'start_time', None)
+        et = getattr(element_obj, 'end_time', None)
+
+        for dt in timestamps:
+            val = 0
+            # (A) Skip if dt not in the element’s validity interval
+            if st and dt >= st and et and dt < et:
+                # (B) If active, call aggregator
+                val = agg_func(self, element_type, element_obj.oid, base_attribute, dt)
+
+            values.append([val])
+
+        if values:
+            new_ts = self.add_time_series(timestamps, [base_attribute], values)
+            element_obj.add_temporal_property(base_attribute,new_ts,self)
+        else:
+            print(f"No data computed for {element_obj.oid} in the specified range.")
+
+    def _collect_timestamps_for_element(self, element_obj, element_type):
+        """
+        Collect actual timestamps from events associated with the element.
+        For a node, this includes the node's start/end times and the start times of incident edges.
+        For an edge, it could include its own start time.
+        For subgraphs, combine timestamps from all contained nodes and edges.
+        """
+        timestamps = set()
+        if element_type == 'node':
+            timestamps.add(element_obj.start_time)
+            timestamps.add(element_obj.end_time)
+            for u, v, key, data in self.graph.edges(element_obj.oid, keys=True, data=True):
+                st = data.get('start_time', None)
+                if st:
+                    timestamps.add(st)
+        elif element_type == 'edge':
+            st = element_obj.start_time if hasattr(element_obj, 'start_time') else None
+            if st:
+                timestamps.add(st)
+        elif element_type == 'subgraph':
+            for node_id, data in self.graph.nodes(data=True):
+                node_obj = data.get('data')
+                if node_obj:
+                    timestamps.add(node_obj.start_time)
+                    timestamps.add(node_obj.end_time)
+            for u, v, key, data in self.graph.edges(keys=True, data=True):
+                st = data.get('start_time', None)
+                if st:
+                    timestamps.add(st)
+        return sorted(list(timestamps))
+
+    def _compute_ts_for_edge_group(self, edges, ts_config):
+        """
+        For a group of edges (assumed to share source, target, and label), compute a time series
+        by aggregating the aggregator function's output across the group.
+        """
+
+        base_attribute = ts_config.get('attribute', 'default_attribute')
+        agg_func = ts_config.get('aggregate_function')
+
+        # Decide on timestamps: if use_actual_timestamps, collect from all edges.
+        if ts_config.get('use_actual_timestamps', False):
+            timestamps = set()
+            for u, v, key, data in edges:
+                st = data.get('start_time', None)
+                if st:
+                    timestamps.add(st)
+            timestamps = sorted(list(timestamps))
+            if not timestamps:
+                start_date = ts_config.get('start_date', datetime.now())
+                end_date = ts_config.get('end_date', datetime.now())
+                freq = ts_config.get('freq', 'D')
+                timestamps = list(pd.date_range(start=start_date, end=end_date, freq=freq))
+        else:
+            start_date = ts_config.get('start_date', datetime.now())
+            end_date = ts_config.get('end_date', datetime.now())
+            freq = ts_config.get('freq', 'D')
+            timestamps = list(pd.date_range(start=start_date, end=end_date, freq=freq))
+
+        values = []
+        for dt in timestamps:
+            group_val = 0
+            for u, v, key, data in edges:
+                edge_obj = data['data']
+                st = getattr(edge_obj, 'start_time', None)
+                et = getattr(edge_obj, 'end_time', None)
+                if st and dt>=st and et and dt<et:
+                    group_val += agg_func(self, 'edge', key, base_attribute, dt)
+            values.append([group_val])
+
+        if values:
+            return self.add_time_series(timestamps, [base_attribute], values)
+        else:
+            print("No aggregated data computed for the edge group.")
+            return None
 
 
     #DFS with ts similarity
