@@ -105,7 +105,7 @@ def build_timeseries_similarity_graph(time_series_list, threshold, node_label, t
     return hygraph
 
 
-# Utility functions (assuming these are part of your codebase)
+# Utility functions
 def compute_similarity_timeseries(ts1, ts2, metric='euclidean', window_size=5):
     """
     Compute similarity over time between two TimeSeries objects using a sliding window.

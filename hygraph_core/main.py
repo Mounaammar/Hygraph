@@ -1,8 +1,11 @@
+import cProfile
+import pstats
 from datetime import datetime, timedelta
 import time
 
 import numpy as np
 import pandas as pd
+from bokeh.server.tornado import psutil
 from watchdog.observers import Observer
 
 from HyGraphFileLoaderBatch import HyGraphBatchProcessor
@@ -12,7 +15,8 @@ import os
 
 from hygraph_core.hygraph_universal_pipeline import HyGraphUniversalPipeline
 from hygraph_core.timeseries_operators import TimeSeries, TimeSeriesMetadata
-
+from dask.distributed import Client, progress
+from dask import delayed, compute
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -29,6 +33,10 @@ def count_edges_in_subgraph(subgraph, date):
 
 if __name__ == "__main__":
     hy = HyGraph()
+    # Initialize a Dask distributed client (adjust settings as needed)
+    '''client = Client()
+    print("Dask client initialized:", client)
+    print("Dashboard available at:", client.dashboard_link)'''
 
     # 2) Create a universal pipeline
     pipeline = HyGraphUniversalPipeline(hy)
@@ -36,7 +44,7 @@ if __name__ == "__main__":
     # Define the CSV field mappings for nodes & edges:
     # Suppose your node CSV has columns: 'id','start_time','end_time','num_bikes_available',...
     # and your edge CSV has columns: 'id','source_id','target_id','start_time','end_time','num_rides',...
-    node_field_map = {
+    '''node_field_map = {
         "oid": "station_id",  # CSV "id" -> node's internal ID
         "start_time": "start",
         "end_time": "end"
@@ -47,24 +55,54 @@ if __name__ == "__main__":
         "target_id": "to",
         "start_time": "start",
         "end_time": "end"
-    }
+    }'''
 
     # If certain columns are time-series data for each row:
     node_ts_columns = ["num_bikes_available", "num_docks_disabled","num_bikes_disabled","num_bikes_available"]
     edge_ts_columns = ["num_rides", "member_rides","casual_rides","classic_rides","electric_rides","active_trips"]
 
     # 3) Configure pipeline for JSON
-    pipeline.configure_for_json(
+    ''' pipeline.configure_for_json(
         node_json_path=os.path.join(base_dir, 'inputFiles', 'nodes'),
         edge_json_path=os.path.join(base_dir, 'inputFiles', 'edges'),
         node_field_map=node_field_map,
         edge_field_map=edge_field_map
     )
-    pipeline.run_pipeline()
+    pipeline.run_pipeline()'''
 
-    # Now your HyGraph has nodes/edges/subgraphs from both CSV & JSON
-    # (if you configured both). You can do queries or display again:
-    hy.display()
+
+
+    # Define the CSV field mappings for nodes & edges:
+    # Suppose your node CSV has columns: 'id','start_time','end_time','num_bikes_available',...
+    # and your edge CSV has columns: 'id','source_id','target_id','start_time','end_time','num_rides',...
+    node_field_map = {
+        "oid": "station_id",  # CSV "id" -> node's internal ID
+        "start_time": "start_time",
+    }
+    edge_field_map = {
+        "oid": "id",  # CSV "id" -> edge's internal ID
+        "source_id": "source_id",
+        "target_id": "target_id",
+        "start_time": "start_time",
+        "end_time": "end_time"
+    }
+
+    # 3) Configure pipeline for CSV
+
+    pipeline.configure_for_csv(
+        nodes_folder=os.path.join('upload_files', 'data_scale_1_2263_3778433', 'nodes'),
+        edges_folder=os.path.join('upload_files', 'data_scale_1_2263_3778433', 'edges'),
+        node_field_map=node_field_map,
+        edge_field_map=edge_field_map,
+        max_rows_per_batch=10_000
+    )
+    cProfile.run('pipeline.run_pipeline()', 'profile_stats')
+    p = pstats.Stats('profile_stats')
+    p.sort_stats('cumtime').print_stats(10)
+    print("\nFinal HyGraph Summary:")
+    print(f"Total nodes loaded: {len(hy.graph.nodes)}")
+    print(f"Total edges loaded: {len(hy.graph.edges)}")
+    print(f"Total time series objects: {len(hy.time_series)}")
 
     target_name = "Whitehall St & Bridge St"
 
@@ -74,6 +112,107 @@ if __name__ == "__main__":
         condition=lambda static_prop: static_prop.value == target_name
     )
 
+
+    def measure_memory_mb():
+        """Return current memory usage in MB using psutil."""
+        p = psutil.Process(os.getpid())
+        return p.memory_info().rss / (1024 * 1024)
+
+
+    def timed_run(func, *args, **kwargs):
+        """Measure elapsed time and memory usage of func(*args, **kwargs)."""
+        m_before = measure_memory_mb()
+        t_start = time.time()
+        result = func(*args, **kwargs)
+        t_end = time.time()
+        m_after = measure_memory_mb()
+        return (t_end - t_start, m_before, m_after, result)
+
+
+    def active_ride_aggregator(hy, element_type, oid, attribute, dt):
+        """
+        Returns 1 if dt is within the ride's [start_time, end_time), else 0.
+        """
+        edge_obj = hy.get_element(element_type, oid)
+        st = getattr(edge_obj, 'start_time', None)
+        print()
+        et = getattr(edge_obj, 'end_time', None)
+        print('st ', st, 'et ',et)
+        if st and dt < st:
+            return 0
+        if et and dt >= et:
+            return 0
+        return 1
+
+
+    query_agg = {
+        'element_type': 'edge',
+        'edge_filter': lambda ed: ed['data'].label == 'trip_concat',
+        'aggregation': True,  # merges edges by (source, target, label)
+        'edge_settings': {
+            'group_by': ['source', 'target', 'label']
+        },
+        'time_series_config': {
+            'start_date': datetime(2023, 1, 1),  # or min from your data
+            'end_date': datetime(2025, 2, 1),
+            'freq': 'D',
+            'attribute': 'active_ride_count',
+            'aggregate_function': active_ride_aggregator,
+            'use_actual_timestamps': True
+        }
+    }
+
+    query_noagg = {
+        'element_type': 'edge',
+        'edge_filter': lambda ed: ed['data'].label == 'trip_concat',
+        'aggregation': False,
+        'time_series_config': {
+            'start_date': datetime(2023, 1, 1),
+            'end_date': datetime(2025, 2, 1),
+            'freq': 'D',
+            'attribute': 'active_ride_count',
+            'aggregate_function': active_ride_aggregator,
+            'use_actual_timestamps': True
+        }
+    }
+    def run_extract_ts_experiment(iterations=10):
+        times_agg = []
+        mem_deltas_agg = []
+        times_noagg = []
+        mem_deltas_noagg = []
+
+        for i in range(iterations):
+            print(f"Iteration {i + 1}/{iterations} - Aggregation Query:")
+            t_agg, mem_before_agg, mem_after_agg, _ = timed_run(hy.create_time_series_from_graph, query_agg)
+            times_agg.append(t_agg)
+            mem_deltas_agg.append(mem_after_agg - mem_before_agg)
+            print(f"[AGGREGATION] time={t_agg:.2f}s, mem_delta={(mem_after_agg - mem_before_agg):.2f}MB")
+
+            # Optionally, reset or clear the time series from the HyGraph if needed between runs
+
+            print(f"Iteration {i + 1}/{iterations} - No Aggregation Query:")
+            t_noagg, mem_before_noagg, mem_after_noagg, _ = timed_run(hy.create_time_series_from_graph, query_noagg)
+            times_noagg.append(t_noagg)
+            mem_deltas_noagg.append(mem_after_noagg - mem_before_noagg)
+            print(f"[NO-AGGREGATION] time={t_noagg:.2f}s, mem_delta={(mem_after_noagg - mem_before_noagg):.2f}MB")
+
+        avg_time_agg = sum(times_agg) / iterations
+        avg_mem_agg = sum(mem_deltas_agg) / iterations
+        avg_time_noagg = sum(times_noagg) / iterations
+        avg_mem_noagg = sum(mem_deltas_noagg) / iterations
+
+        print(f"\nAverage Aggregation: time={avg_time_agg:.2f}s, mem_delta={avg_mem_agg:.2f}MB")
+        print(f"Average No Aggregation: time={avg_time_noagg:.2f}s, mem_delta={avg_mem_noagg:.2f}MB")
+
+        return {
+            'agg_time': avg_time_agg,
+            'agg_mem': avg_mem_agg,
+            'noagg_time': avg_time_noagg,
+            'noagg_mem': avg_mem_noagg,
+        }
+
+
+    result_data = run_extract_ts_experiment()
     '''nodes_folder = os.path.join(base_dir, 'inputFiles', 'nodes')
     edges_folder = os.path.join(base_dir, 'inputFiles', 'edges')
     subgraph_folder = os.path.join(base_dir, 'inputFiles', 'subgraphs')

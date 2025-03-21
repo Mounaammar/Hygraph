@@ -1093,7 +1093,7 @@ class HyGraph:
         Parameters:
           - node_obj: The node object (e.g., a PGNode) from which to aggregate edges.
           - target: String indicating which edges to consider ('source', 'target', or 'both').
-          - node_settings: Dictionary that may contain 'include_edges' (a list of edge labels to include).
+          - node_settings: Dictionary that contain 'include_edges' (a list of edge labels to include).
           - ts_config: Time series configuration dictionary; must contain 'aggregate_function' and 'attribute'.
 
         Returns:
