@@ -11,17 +11,45 @@ from hygraph_core.hygraph import HyGraph, HyGraphQuery
 from hygraph_core.timeseries_operators import TimeSeriesMetadata, TimeSeries
 
 
-def build_timeseries_similarity_graph(time_series_list, threshold, node_label, ts_attr_list, variable_name, hygraph=None,
-                                     shape_similarity_metric='euclidean', feature_similarity_metric='cosine',
-                                      similarity_weights=None, edge_type='PGEdge',
-                                     ):
+# -- LSH Utility Functions --
+def _generate_random_planes(dim, num_bits):
+    """
+    Generate a list of random hyperplanes for LSH.
+    """
+    return [np.random.randn(dim) for _ in range(num_bits)]
+
+
+def _compute_lsh_signature(vector, planes):
+    """
+    Compute a k-bit LSH signature by projecting vector onto each plane.
+    """
+    return ''.join('1' if np.dot(vector, plane) >= 0 else '0' for plane in planes)
+
+
+def build_timeseries_similarity_graph(
+    time_series_list,
+    threshold,
+    node_label,
+    ts_attr_list,
+    variable_name,
+    hygraph=None,
+    shape_similarity_metric='euclidean',
+    feature_similarity_metric='cosine',
+    similarity_weights=None,
+    edge_type='PGEdge',
+    # LSH parameters
+    lsh_mode='both',                    # 'none', 'shape', 'feature', or 'both'
+    lsh_shape_num_tables=5,             # number of tables for shape LSH
+    lsh_shape_num_bits=10,              # bits per shape table
+    lsh_feature_num_tables=5,           # number of tables for feature LSH
+    lsh_feature_num_bits=10             # bits per feature table
+):
     """
     Build a HyGraph where each time series is a TSNode, and edges are added based on combined similarity.
-
     :param time_series_list: List of dictionaries containing time series data. Each dict should have:
-        - 'timestamps': List of timestamps
-        - 'variables': List of variable names (for multivariate time series)
-        - 'data': 2D list or numpy array of data corresponding to variables
+      - 'timestamps': List of timestamps
+      - 'variables': List of variable names (for multivariate time series)
+      - 'data': 2D list or numpy array of data corresponding to variables
     :param threshold: Similarity threshold to add an edge between two nodes
     :param node_label: Label for the nodes
     :param ts_attr_list: List of attributes for the time series nodes
@@ -46,61 +74,121 @@ def build_timeseries_similarity_graph(time_series_list, threshold, node_label, t
         tsid = hygraph.id_generator.generate_timeseries_id()
         node_id = hygraph.id_generator.generate_node_id()
 
-        # Create TimeSeries object
         timestamps = ts_data['timestamps']
         variables = ts_data['variables']
         data = ts_data['data']
         metadata = TimeSeriesMetadata(owner_id=node_id, element_type='TSNode', attributes=ts_attr_list[idx])
 
-        time_series = TimeSeries(tsid=tsid, timestamps=timestamps, variables=variables, data=data, metadata=metadata)
+        time_series = TimeSeries(tsid=tsid, timestamps=timestamps,
+                                 variables=variables, data=data, metadata=metadata)
         hygraph.time_series[tsid] = time_series
 
-        # Create TSNode
         ts_node = hygraph.add_tsnode(oid=node_id, label=node_label, time_series=time_series)
-
         ts_nodes.append(ts_node)
         tsid_to_nodeid[tsid] = node_id
 
-    # Step 2: Compute pairwise similarities and add edges
     num_ts = len(ts_nodes)
-    for i in range(num_ts):
-        for j in range(i + 1, num_ts):
-            ts1 = ts_nodes[i].series  # TimeSeries object
-            ts2 = ts_nodes[j].series  # TimeSeries object
 
-            # Compute shape similarity using existing TimeSeries methods
-            shape_similarity = ts1.shape_similarity(ts2, variable_name=variable_name, metric=shape_similarity_metric)
+    # If no LSH, fallback to all-pairs
+    if lsh_mode == 'none':
+        candidate_matrix = [list(range(i+1, num_ts)) for i in range(num_ts)]
+    else:
+        # Prepare embeddings
+        # --- Shape embeddings ---
+        if lsh_mode in ('shape', 'both'):
+            # Flatten and collect raw shape vectors
+            shape_vectors = [node.series.data.values.flatten().astype(float) for node in ts_nodes]
+            # Pad or truncate to uniform length
+            max_len = max(v.size for v in shape_vectors)
+            shape_vectors = [
+                np.pad(v, (0, max_len - v.size), mode='constant')[:max_len]
+                for v in shape_vectors
+            ]
+            # Build random hyperplanes for shape LSH
+            shape_planes = [
+                [np.random.randn(max_len) for _ in range(lsh_shape_num_bits)]
+                for _ in range(lsh_shape_num_tables)
+            ]
+            # Create shape hash tables
+            shape_tables = []
+            for planes in shape_planes:
+                table = {}
+                for idx_vec, vec in enumerate(shape_vectors):
+                    sig = ''.join('1' if np.dot(vec, p) >= 0 else '0' for p in planes)
+                    table.setdefault(sig, []).append(idx_vec)
+                shape_tables.append(table)
+        # --- Feature embeddings ---
+        if lsh_mode in ('feature', 'both'):
+            feature_vectors = [node.series.extract_features() for node in ts_nodes]
+            feat_len = feature_vectors[0].shape[0]
+            feat_planes = [
+                [np.random.randn(feat_len) for _ in range(lsh_feature_num_bits)]
+                for _ in range(lsh_feature_num_tables)
+            ]
+            feature_tables = []
+            for planes in feat_planes:
+                table = {}
+                for idx_vec, vec in enumerate(feature_vectors):
+                    sig = ''.join('1' if np.dot(vec, p) >= 0 else '0' for p in planes)
+                    table.setdefault(sig, []).append(idx_vec)
+                feature_tables.append(table)
+        # Build candidate list by union of buckets
+        candidate_matrix = []
+        for i in range(num_ts):
+            cands = set()
+            if lsh_mode in ('shape', 'both'):
+                for table, planes in zip(shape_tables, shape_planes):
+                    sig = ''.join('1' if np.dot(shape_vectors[i], p) >= 0 else '0' for p in planes)
+                    cands.update(table.get(sig, []))
+            if lsh_mode in ('feature', 'both'):
+                for table, planes in zip(feature_tables, feat_planes):
+                    sig = ''.join('1' if np.dot(feature_vectors[i], p) >= 0 else '0' for p in planes)
+                    cands.update(table.get(sig, []))
+            cands.discard(i)
+            candidate_matrix.append([j for j in cands if j > i])
+        candidate_matrix = []
+        for i in range(num_ts):
+            cands = set()
+            if lsh_mode in ('shape', 'both'):
+                for table, planes in zip(shape_tables, shape_planes):
+                    sig = _compute_lsh_signature(shape_vectors[i], planes)
+                    cands.update(table.get(sig, []))
+            if lsh_mode in ('feature', 'both'):
+                for table, planes in zip(feature_tables, feat_planes):
+                    sig = _compute_lsh_signature(feature_vectors[i], planes)
+                    cands.update(table.get(sig, []))
+            cands.discard(i)
+            # Only keep j > i to avoid duplicates
+            candidate_matrix.append([j for j in cands if j > i])
 
-            # Compute feature similarity using existing TimeSeries methods
-            feature_similarity = ts1.feature_similarity(ts2, metric=feature_similarity_metric)
+    # Step 2: Compute similarities only over candidates
+    for i, neighbors in enumerate(candidate_matrix):
+        for j in neighbors:
+            ts1 = ts_nodes[i].series
+            ts2 = ts_nodes[j].series
 
-            # Combine similarities using specified weights
-            total_similarity = (similarity_weights['shape'] * shape_similarity) + \
-                               (similarity_weights['feature'] * feature_similarity)
+            shape_sim = ts1.shape_similarity(ts2, variable_name=variable_name, metric=shape_similarity_metric)
+            feat_sim  = ts1.feature_similarity(ts2, metric=feature_similarity_metric)
+            total_sim = (similarity_weights['shape'] * shape_sim) + \
+                        (similarity_weights['feature'] * feat_sim)
 
-            if total_similarity >= threshold:
-                # Determine overlapping time period for the edge
-                edge_start_time = max(ts1.first_timestamp(), ts2.first_timestamp())
-                edge_end_time = min(ts1.last_timestamp(), ts2.last_timestamp())
-                # Create an edge between ts_nodes[i] and ts_nodes[j]
-                edge_id = hygraph.id_generator.generate_edge_id()
+            if total_sim >= threshold:
+                edge_start = max(ts1.first_timestamp(), ts2.first_timestamp())
+                edge_end   = min(ts1.last_timestamp(),  ts2.last_timestamp())
+                eid = hygraph.id_generator.generate_edge_id()
 
                 if edge_type == 'PGEdge':
-                    # For PGEdge, store the similarities as properties
-                    properties = {
-                        'total_similarity': total_similarity,
-                        'shape_similarity': shape_similarity,
-                        'feature_similarity': feature_similarity
-                    }
-                    hygraph.add_pgedge(edge_id, ts_nodes[i].getId(), ts_nodes[j].getId(), 'Similar',
-                                       start_time=edge_start_time,end_time=edge_end_time, properties=properties)
-                elif edge_type == 'TSEdge':
-                    # For TSEdge, store the similarity over time as a TimeSeries
-                    similarity_ts = compute_similarity_timeseries(ts1, ts2, metric=shape_similarity_metric)
-                    hygraph.add_tsedge(edge_id, ts_nodes[i].getId(), ts_nodes[j].getId(),
-                                       'Similar', similarity_ts)
+                    props = {'total_similarity': total_sim,
+                             'shape_similarity': shape_sim,
+                             'feature_similarity': feat_sim}
+                    hygraph.add_pgedge(eid, ts_nodes[i].getId(), ts_nodes[j].getId(),
+                                       'Similar', start_time=edge_start,
+                                       end_time=edge_end, properties=props)
                 else:
-                    raise ValueError("edge_type must be 'PGEdge' or 'TSEdge'")
+                    # TSEdge with time-varying shape similarity
+                    sim_ts = compute_similarity_timeseries(ts1, ts2, metric=shape_similarity_metric)
+                    hygraph.add_tsedge(eid, ts_nodes[i].getId(), ts_nodes[j].getId(),
+                                       'Similar', sim_ts)
 
     return hygraph
 
@@ -289,12 +377,19 @@ if __name__ == '__main__':
         threshold=threshold,
         node_label='Stock',
         ts_attr_list=ts_attr_list,
-        variable_name='Price',  # Assuming 'Price' is the variable name
+        variable_name='Price',
         shape_similarity_metric='euclidean',
         feature_similarity_metric='cosine',
         similarity_weights=None,
-        edge_type='PGEdge'
+        edge_type='PGEdge',
+        # you can now tune or disable LSH:
+        lsh_mode='both',  # 'none' to brute-force, or 'shape' / 'feature'
+        lsh_shape_num_tables=5,
+        lsh_shape_num_bits=10,
+        lsh_feature_num_tables=5,
+        lsh_feature_num_bits=10
     )
+
     # Print the nodes and edges
     # Print the nodes
     print("Nodes:")
