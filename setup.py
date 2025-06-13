@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='hygraph_core',       # Name of your package
-    version='0.3.9.2',                 # Version of your package
+    version='0.3.9.7',                 # Version of your package
     description='A package for managing and analyzing HyGraph data',
     long_description=open('README.md').read(),  # Read the content of README.md
     long_description_content_type='text/markdown',

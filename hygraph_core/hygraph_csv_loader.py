@@ -15,6 +15,8 @@ import polars as pl
 from datetime import datetime
 from typing import Optional, Any, Dict, List
 
+import xxhash
+
 from hygraph_core.hygraph import HyGraph
 from hygraph_core.constraints import parse_datetime  # your custom parse_datetime function
 from hygraph_core.timeseries_operators import TimeSeries, TimeSeriesMetadata
@@ -66,6 +68,9 @@ class HyGraphCSVLoader:
         self.edge_field_map = edge_field_map or {}
         self.node_ts_columns = node_ts_columns or []
         self.edge_ts_columns = edge_ts_columns or []
+        self.node_hash = {}
+
+
 
     ########################
     #     MAIN PIPELINE    #
@@ -98,52 +103,43 @@ class HyGraphCSVLoader:
         print(f"\n[Nodes] Loading from {csv_path} with label={label}")
         scan = pl.scan_csv(csv_path, dtypes=NODES_SCHEMA)
         offset = 0
-        batch_idx = 0
         while True:
             df = scan.slice(offset, self.max_rows_per_batch).collect()
             if df.height == 0:
                 break
-            batch_idx += 1
-            print(f"   -> Processing Node Batch #{batch_idx} with {df.height} rows (offset={offset})")
-            self._process_node_batch(df, label)
+            for row in df.iter_rows(named=True):
+                self._process_node_record(row, label)
             offset += df.height
-
-    def _process_node_batch(self, df: pl.DataFrame, label: str):
-        for row in df.iter_rows(named=True):
-            self._process_node_record(row, label)
-
 
     def _process_node_record(self, row: Dict[str, Any], label: str):
         oid_col = self.node_field_map.get("oid", "id")
+        oid = normalize_oid(oid_col)
+        hash_id = xxhash.xxh64(oid).intdigest()
+        self.node_hash[oid] = hash_id
         start_col = self.node_field_map.get("start_time", "start_time")
         end_col = self.node_field_map.get("end_time", "end_time")
-
-        external_id = str(row.get(oid_col, "")) or f"node_{id(row)}"
-        # Parse datetime fields using _safe_parse_date
-        start_time = self._safe_parse_date(row.get(start_col), default=datetime.now())
-        end_time = self._safe_parse_date(row.get(end_col), default=FAR_FUTURE_DATE)
-
         known_cols = {oid_col, start_col, end_col}
         props = {k: v for k, v in row.items() if k not in known_cols and k not in self.node_ts_columns}
-
-        if external_id not in self.hygraph.graph.nodes:
+        start_time = self._safe_parse_date(row.get(start_col), default=datetime.now())
+        end_time = self._safe_parse_date(row.get(end_col), default=FAR_FUTURE_DATE)
+        if hash_id not in self.hygraph.graph.nodes:
             self.hygraph.add_pgnode(
-                oid=external_id,
+                oid=hash_id,
                 label=label,
                 start_time=start_time,
                 end_time=end_time,
                 properties=props
             )
         else:
-            existing_node = self.hygraph.graph.nodes[external_id]["data"]
+            existing_node = self.hygraph.graph.nodes[hash_id]["data"]
             for kk, vv in props.items():
                 existing_node.add_static_property(kk, vv, self.hygraph)
 
         if self.node_ts_columns:
-            self._process_node_time_series_columns(external_id, row, start_time)
+            self._process_node_time_series_columns(hash_id, row, start_time)
 
-    def _process_node_time_series_columns(self, external_id: str, row: Dict[str, Any], timestamp: datetime):
-        node_data = self.hygraph.graph.nodes[external_id]["data"]
+    def _process_node_time_series_columns(self, external_id: int, row: Dict[str, Any], timestamp: datetime):
+
         for col_name in self.node_ts_columns:
             if col_name not in row:
                 continue
@@ -154,7 +150,9 @@ class HyGraphCSVLoader:
                 metadata = TimeSeriesMetadata(owner_id=external_id, element_type="node")
                 new_ts = TimeSeries(tsid=tsid, timestamps=[timestamp], variables=[col_name], data=[[val]], metadata=metadata)
                 self.hygraph.time_series[tsid] = new_ts
-                node_data.add_temporal_property(col_name, new_ts, self.hygraph)
+                node_data = self.hygraph.graph.nodes[external_id]["data"]
+                node_data.add_temporal_property(col_name, new_ts, graph=self.hygraph)
+
             else:
                 if existing_ts.has_timestamp(timestamp):
                     existing_ts.update_value_at_timestamp(timestamp, val, variable_name=col_name)
@@ -194,12 +192,13 @@ class HyGraphCSVLoader:
 
     def _process_edge_record(self, row: Dict[str, Any], label: str):
         oid_col = self.edge_field_map.get("oid", "id")
-        src_col = self.edge_field_map.get("source_id", "source_id")
-        tgt_col = self.edge_field_map.get("target_id", "target_id")
-        st_col = self.edge_field_map.get("start_time", "start_time")
-        ed_col = self.edge_field_map.get("end_time", "end_time")
+        src_col = self.edge_field_map.get("source_id")
+        tgt_col = self.edge_field_map.get("target_id")
+        st_col = self.edge_field_map.get("start_time")
+        ed_col = self.edge_field_map.get("end_time")
+        oid = normalize_oid(row.get(oid_col, ""))
+        hash_id = xxhash.xxh64(oid).intdigest()
 
-        edge_id = str(row.get(oid_col, "")) or f"edge_{id(row)}"
         source_id = str(row.get(src_col, ""))
         target_id = str(row.get(tgt_col, ""))
         # Parse datetime fields for proper comparisons
@@ -208,25 +207,20 @@ class HyGraphCSVLoader:
 
         known_cols = {oid_col, src_col, tgt_col, st_col, ed_col}
         props = {k: v for k, v in row.items() if k not in known_cols and k not in self.edge_ts_columns}
-
-        if source_id not in self.hygraph.graph.nodes:
-            print(f"      [WARN] Skipping Edge {edge_id}: Source {source_id} not found.")
+        src_id = self.node_hash.get(source_id)
+        tgt_id = self.node_hash.get(target_id)
+        if src_id not in self.hygraph.graph.nodes:
+            print(f"      [WARN] Skipping Edge {hash_id}: Source {src_id} not found.")
             return
-        if target_id not in self.hygraph.graph.nodes:
-            print(f"      [WARN] Skipping Edge {edge_id}: Target {target_id} not found.")
+        if tgt_id not in self.hygraph.graph.nodes:
+            print(f"      [WARN] Skipping Edge {hash_id}: Target {tgt_id} not found.")
             return
 
-        existing_edge = None
-        for u, v, key, data in self.hygraph.graph.edges(keys=True, data=True):
-            if key == edge_id:
-                existing_edge = data["data"]
-                break
-
-        if not existing_edge:
+        if hash_id not in self.hygraph.graph.edges and src_id in self.hygraph.graph.nodes and tgt_id in self.hygraph.graph.nodes:
             self.hygraph.add_pgedge(
-                oid=edge_id,
-                source=source_id,
-                target=target_id,
+                oid=hash_id,
+                source=src_id,
+                target=tgt_id,
                 label=label,
                 start_time=start_time,
                 end_time=end_time,
@@ -234,19 +228,17 @@ class HyGraphCSVLoader:
             )
         else:
             for kk, val in props.items():
+                existing_edge = None
+                for u, v, key, data in self.hygraph.graph.edges(keys=True, data=True):
+                    if key == hash_id:
+                        existing_edge = data["data"]
+                        break
                 existing_edge.add_static_property(kk, val, self.hygraph)
 
         if self.edge_ts_columns:
-            self._process_edge_time_series_columns(edge_id, row, start_time)
+            self._process_edge_time_series_columns(hash_id, row, start_time)
 
-    def _process_edge_time_series_columns(self, edge_id: str, row: Dict[str, Any], timestamp: datetime):
-        edge_data = None
-        for u, v, k, edata in self.hygraph.graph.edges(keys=True, data=True):
-            if k == edge_id:
-                edge_data = edata["data"]
-                break
-        if not edge_data:
-            return
+    def _process_edge_time_series_columns(self, edge_id: int, row: Dict[str, Any], timestamp: datetime):
 
         for col_name in self.edge_ts_columns:
             if col_name not in row:
@@ -258,6 +250,7 @@ class HyGraphCSVLoader:
                 metadata = TimeSeriesMetadata(owner_id=edge_id, element_type="edge")
                 new_ts = TimeSeries(tsid=tsid, timestamps=[timestamp], variables=[col_name], data=[[val]], metadata=metadata)
                 self.hygraph.time_series[tsid] = new_ts
+                edge_data = self.hygraph.graph.edges[edge_id]["data"]
                 edge_data.add_temporal_property(col_name, new_ts, self.hygraph)
             else:
                 if existing_ts.has_timestamp(timestamp):
@@ -294,3 +287,11 @@ class HyGraphCSVLoader:
 
         print(f"Failed to parse datetime: {val}")
         return default if default else datetime.now()
+def normalize_oid(raw_id):
+    try:
+        as_float = float(raw_id)
+        if as_float.is_integer():
+            return str(int(as_float))
+        return str(raw_id)
+    except (ValueError, TypeError):
+        return str(raw_id)

@@ -44,7 +44,7 @@ if __name__ == "__main__":
     # Define the CSV field mappings for nodes & edges:
     # Suppose your node CSV has columns: 'id','start_time','end_time','num_bikes_available',...
     # and your edge CSV has columns: 'id','source_id','target_id','start_time','end_time','num_rides',...
-    '''node_field_map = {
+    node_field_map = {
         "oid": "station_id",  # CSV "id" -> node's internal ID
         "start_time": "start",
         "end_time": "end"
@@ -55,27 +55,27 @@ if __name__ == "__main__":
         "target_id": "to",
         "start_time": "start",
         "end_time": "end"
-    }'''
+    }
 
     # If certain columns are time-series data for each row:
     node_ts_columns = ["num_bikes_available", "num_docks_disabled","num_bikes_disabled","num_bikes_available"]
     edge_ts_columns = ["num_rides", "member_rides","casual_rides","classic_rides","electric_rides","active_trips"]
 
     # 3) Configure pipeline for JSON
-    ''' pipeline.configure_for_json(
+    pipeline.configure_for_json(
         node_json_path=os.path.join(base_dir, 'inputFiles', 'nodes'),
         edge_json_path=os.path.join(base_dir, 'inputFiles', 'edges'),
         node_field_map=node_field_map,
         edge_field_map=edge_field_map
     )
-    pipeline.run_pipeline()'''
+    pipeline.run_pipeline()
 
 
 
     # Define the CSV field mappings for nodes & edges:
     # Suppose your node CSV has columns: 'id','start_time','end_time','num_bikes_available',...
     # and your edge CSV has columns: 'id','source_id','target_id','start_time','end_time','num_rides',...
-    node_field_map = {
+    '''node_field_map = {
         "oid": "station_id",  # CSV "id" -> node's internal ID
         "start_time": "start_time",
     }
@@ -95,7 +95,7 @@ if __name__ == "__main__":
         node_field_map=node_field_map,
         edge_field_map=edge_field_map,
         max_rows_per_batch=10_000
-    )
+    )'''
     cProfile.run('pipeline.run_pipeline()', 'profile_stats')
     p = pstats.Stats('profile_stats')
     p.sort_stats('cumtime').print_stats(10)

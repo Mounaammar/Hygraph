@@ -16,9 +16,24 @@ Example:
     super_edge.json    # => label="super_edge"
     ...
 """
+import polars as pl
 
+NODES_SCHEMA = {
+    "id": pl.Utf8,
+    "start_time": pl.Utf8,
+    "end_time": pl.Utf8,
+}
+
+EDGES_SCHEMA = {
+    "id": pl.Utf8,
+    "source_id": pl.Utf8,
+    "target_id": pl.Utf8,
+    "start_time": pl.Utf8,
+    "end_time": pl.Utf8,
+}
 import os
 import ijson
+import xxhash
 from datetime import datetime
 from typing import Optional, Dict, Any
 
@@ -41,7 +56,8 @@ def simple_parse_date(date_str: str) -> Optional[datetime]:
     except ValueError:
         return None
 
-
+def fast_hash(key):
+    return xxhash.xxh64(str(key)).intdigest()
 class HyGraphJSONLoader:
     """
     A specialized pipeline that can read *directories* containing multiple JSON files
@@ -56,6 +72,7 @@ class HyGraphJSONLoader:
         edge_json_path: str,
         node_field_map: Dict[str, str],
         edge_field_map: Dict[str, str],
+
     ):
         """
         :param hygraph: An instance of HyGraph where data is loaded.
@@ -70,6 +87,7 @@ class HyGraphJSONLoader:
         self.edge_json_path = edge_json_path
         self.node_field_map = node_field_map
         self.edge_field_map = edge_field_map
+        self.node_hash = {}
 
     def run_pipeline(self):
         """
@@ -127,6 +145,7 @@ class HyGraphJSONLoader:
             print(f"\n[JSON Loader] Loading node file '{file_path}' with label='{file_label}'")
             self._load_node_file(file_path, file_label)
 
+
     def _load_node_file(self, file_path: str, label: str):
         node_count = 0
         try:
@@ -140,59 +159,29 @@ class HyGraphJSONLoader:
             print(f"[ERROR] Failed to load nodes from {file_path}: {e}")
 
     def _process_node_record(self, node_obj: Dict[str, Any], label: str):
-        """
-        Similar logic as your original approach, but we pass 'label' from the filename
-        so you can store that as the node's label if desired.
-        """
-        external_id = None
-        if self.node_field_map.get("oid"):
-            key = self.node_field_map["oid"]
-            external_id = str(node_obj.get(key, ""))
-        if not external_id:
-            external_id = f"node_{id(node_obj)}"  # fallback
+        oid = normalize_oid(node_obj.get(self.node_field_map.get("oid", ""), f"node_{id(node_obj)}"))
+        start_col = self.node_field_map.get("start_time", "start_time")
+        end_col = self.node_field_map.get("end_time", "end_time")
+        hashed_id = fast_hash(oid)
+        self.node_hash[oid] = hashed_id
 
-        # parse start_time
-        start = None
-        if self.node_field_map.get("start_time"):
-            start_str = node_obj.get(self.node_field_map["start_time"], "")
-            start = simple_parse_date(start_str) or datetime.now()
-        else:
-            start = datetime.now()
+        # parse start_time and end_time
+        start = simple_parse_date(node_obj.get(self.node_field_map.get("start_time", ""), "")) or datetime.now()
+        end = simple_parse_date(node_obj.get(self.node_field_map.get("end_time", ""), "")) or FAR_FUTURE_DATE
 
-        # parse end_time
-        end = None
-        if self.node_field_map.get("end_time"):
-            end_str = node_obj.get(self.node_field_map["end_time"], "")
-            end = simple_parse_date(end_str) or FAR_FUTURE_DATE
-        else:
-            end = FAR_FUTURE_DATE
-
-        # parse labels if you want (could be a list in JSON)
-        main_label = label  # By default we use the filename's label
-        if self.node_field_map.get("labels"):
-            labels_json_key = self.node_field_map["labels"]
-            maybe_label = node_obj.get(labels_json_key, None)
-            if isinstance(maybe_label, str):
-                main_label = maybe_label
-            elif isinstance(maybe_label, list) and maybe_label:
-                main_label = maybe_label[0]
-
-        # leftover static properties
-        known_mapped_keys = set(self.node_field_map.values())  # e.g. station_id, start, end, labels, ts
-        node_properties = {}
-        for k, v in node_obj.items():
-            if k not in known_mapped_keys and k not in ("ts",):
-                node_properties[k] = v
+        #static properties
+        known_mapped_keys = {oid, start_col, end_col} # e.g. station_id, start, end, labels, ts
+        node_properties = {k: v for k, v in node_obj.items() if k not in known_mapped_keys and k != "ts"}
 
         # create or update node
         existing_node = None
-        if external_id in self.hygraph.graph.nodes:
-            existing_node = self.hygraph.graph.nodes[external_id]["data"]
+        if hashed_id in self.hygraph.graph.nodes:
+            existing_node = self.hygraph.graph.nodes[hashed_id]["data"]
 
         if not existing_node:
             self.hygraph.add_pgnode(
-                oid=external_id,
-                label=main_label,
+                oid=hashed_id,
+                label=label,
                 start_time=start,
                 end_time=end,
                 properties=node_properties
@@ -202,36 +191,10 @@ class HyGraphJSONLoader:
                 existing_node.add_static_property(kk, vv, self.hygraph)
 
         # Time series logic: if there's a "ts" object, parse & attach as temporal properties
-        ts_obj_key = self.node_field_map.get("time_series_key", "ts")
-        ts_obj = node_obj.get(ts_obj_key, {})
+        ts_obj = node_obj.get(self.node_field_map.get("time_series_key", "ts"), {})
         if isinstance(ts_obj, dict):
-            self._process_node_time_series(external_id, ts_obj)
+            self._attach_time_series(hashed_id, ts_obj, "node")
 
-    def _process_node_time_series(self, external_id: str, ts_obj: Dict[str, Any]):
-        node_data = self.hygraph.graph.nodes[external_id]["data"]
-        for ts_name, arr in ts_obj.items():
-            if not isinstance(arr, list):
-                continue
-
-            tsid = f"{external_id}_{ts_name}"
-            existing_ts = self.hygraph.time_series.get(tsid)
-            if not existing_ts:
-                # build new
-                timestamps = []
-                values = []
-                for rec in arr:
-                    start_str = rec.get("Start", "")
-                    val = rec.get("Value", 0)
-                    parsed_start = simple_parse_date(start_str) or datetime.now()
-                    timestamps.append(parsed_start)
-                    values.append([val])
-                metadata = TimeSeriesMetadata(owner_id=external_id, element_type="node")
-                new_ts = TimeSeries(tsid, timestamps, [ts_name], values, metadata)
-                self.hygraph.time_series[tsid] = new_ts
-                node_data.add_temporal_property(ts_name, new_ts, self.hygraph)
-            else:
-                # possibly update or append
-                pass
 
     ########################################
     #             LOAD EDGES              #
@@ -270,124 +233,89 @@ class HyGraphJSONLoader:
 
     def _process_edge_record(self, edge_obj: Dict[str, Any], label: str):
         # parse or generate edge ID
-        external_id = None
-        if self.edge_field_map.get("oid"):
-            key = self.edge_field_map["oid"]
-            external_id = str(edge_obj.get(key, ""))
-
-        if not external_id:
-            # fallback
-            s_val = str(edge_obj.get(self.edge_field_map.get("source_id","from"),""))
-            t_val = str(edge_obj.get(self.edge_field_map.get("target_id","to"),""))
-            st_key = self.edge_field_map.get("start_time", "start")
-            st_str = edge_obj.get(st_key, "")
-            external_id = f"edge_{s_val}_{t_val}_{st_str}"
+        oid = normalize_oid(edge_obj.get(self.edge_field_map.get("oid", ""), ""))
+        s_val = normalize_oid(edge_obj.get(self.edge_field_map.get("source_id","from"),""))
+        t_val = normalize_oid(edge_obj.get(self.edge_field_map.get("target_id","to"),""))
+        sid = self.node_hash.get(s_val)
+        tid = self.node_hash.get(t_val)
+        if not sid or not tid:
+            return
 
         # parse times
-        start = None
-        if self.edge_field_map.get("start_time"):
-            start_str = edge_obj.get(self.edge_field_map["start_time"], "")
-            start = simple_parse_date(start_str) or datetime.now()
-        else:
-            start = datetime.now()
+        hashed_eid = fast_hash(oid)
+        start = simple_parse_date(edge_obj.get(self.edge_field_map.get("start_time", ""), "")) or datetime.now()
+        end = simple_parse_date(edge_obj.get(self.edge_field_map.get("end_time", ""), "")) or FAR_FUTURE_DATE
 
-        end = None
-        if self.edge_field_map.get("end_time"):
-            end_str = edge_obj.get(self.edge_field_map["end_time"], "")
-            end = simple_parse_date(end_str) or FAR_FUTURE_DATE
-        else:
-            end = FAR_FUTURE_DATE
-
-        # parse source & target
-        source_key = self.edge_field_map.get("source_id","from")
-        target_key = self.edge_field_map.get("target_id","to")
-        source_id = str(edge_obj.get(source_key, ""))
-        target_id = str(edge_obj.get(target_key, ""))
-
-        # parse label from JSON field if specified, else fallback to the filename label
-        label_key = self.edge_field_map.get("label")
-        final_label = label  # default is the filename label
-        if label_key:
-            maybe_lbl = edge_obj.get(label_key, None)
-            if maybe_lbl:
-                final_label = str(maybe_lbl)
-
-        # leftover properties
-        known_keys = { self.edge_field_map.get("oid"),
-                       self.edge_field_map.get("source_id"),
-                       self.edge_field_map.get("target_id"),
-                       self.edge_field_map.get("start_time"),
-                       self.edge_field_map.get("end_time"),
-                       self.edge_field_map.get("label"),
-                       self.edge_field_map.get("time_series_key","ts") }
-        known_keys = { x for x in known_keys if x }  # remove None
-        edge_properties = {}
-        for k, v in edge_obj.items():
-            if k not in known_keys:
-                edge_properties[k] = v
+        #static properties
+        edge_properties = {k: v for k, v in edge_obj.items() if k not in self.edge_field_map.values() and k != "ts"}
 
         # ensure source/target exist
-        if source_id not in self.hygraph.graph.nodes:
-            print(f"   [WARN] Edge {external_id}: source node {source_id} not found.")
+        if sid not in self.hygraph.graph.nodes:
+            print(f"   [WARN] Edge {hashed_eid}: source node {sid} not found.")
             return
-        if target_id not in self.hygraph.graph.nodes:
-            print(f"   [WARN] Edge {external_id}: target node {target_id} not found.")
+        if tid not in self.hygraph.graph.nodes:
+            print(f"   [WARN] Edge {hashed_eid}: target node {tid} not found.")
             return
 
         # create or update
         existing_edge = None
-        for u, v, key, data in self.hygraph.graph.edges(keys=True, data=True):
-            if key == external_id:
-                existing_edge = data["data"]
-                break
+        if self.hygraph.graph.has_edge(sid, tid, key=hashed_eid):
+            existing_edge = self.hygraph.graph[sid][tid][hashed_eid]["data"]
 
         if not existing_edge:
+
             self.hygraph.add_pgedge(
-                oid=external_id,
-                source=source_id,
-                target=target_id,
-                label=final_label,
+                oid=hashed_eid,
+                source=sid,
+                target=tid,
+                label=label,
                 start_time=start,
                 end_time=end,
                 properties=edge_properties
             )
         else:
+
             for kk, vv in edge_properties.items():
                 existing_edge.add_static_property(kk, vv, self.hygraph)
 
         # handle time-series if "ts" or other key is present
-        ts_obj_key = self.edge_field_map.get("time_series_key","ts")
-        ts_obj = edge_obj.get(ts_obj_key,{})
+        ts_obj = edge_obj.get(self.edge_field_map.get("time_series_key", "ts"), {})
         if isinstance(ts_obj, dict):
-            self._process_edge_time_series(external_id, ts_obj)
+            self._attach_time_series(hashed_eid, ts_obj, "edge")
 
-    def _process_edge_time_series(self, external_id: str, ts_obj: Dict[str,Any]):
-        edge_data = None
-        for u, v, k, edata in self.hygraph.graph.edges(keys=True, data=True):
-            if k == external_id:
-                edge_data = edata["data"]
-                break
-        if not edge_data:
-            return
+    def _attach_time_series(self, owner_id: int, ts_obj: Dict[str, Any], element_type: str):
 
         for ts_name, arr in ts_obj.items():
             if not isinstance(arr, list):
                 continue
-            tsid = f"{external_id}_{ts_name}"
+
+            tsid = f"{owner_id}_{ts_name}"
             existing_ts = self.hygraph.time_series.get(tsid)
             if not existing_ts:
+                # build new
                 timestamps = []
                 values = []
                 for rec in arr:
-                    start_str = rec.get("Start", "")
-                    val = rec.get("Value", 0)
-                    parsed_start = simple_parse_date(start_str) or datetime.now()
-                    timestamps.append(parsed_start)
-                    values.append([val])
-                metadata = TimeSeriesMetadata(owner_id=external_id, element_type="edge")
+                    timestamps.append(simple_parse_date(rec.get("Start", "")) or datetime.now())
+                    values.append([rec.get("Value", 0)])
+                metadata = TimeSeriesMetadata(owner_id=owner_id, element_type=element_type)
                 new_ts = TimeSeries(tsid, timestamps, [ts_name], values, metadata)
                 self.hygraph.time_series[tsid] = new_ts
-                edge_data.add_temporal_property(ts_name, new_ts, self.hygraph)
-            else:
-                # update or append if needed
-                pass
+                if element_type == "node":
+                    self.hygraph.graph.nodes[owner_id]["data"].add_temporal_property(ts_name, new_ts, self.hygraph)
+                else:
+                    for u, v, k, d in self.hygraph.graph.edges(keys=True, data=True):
+                        if k == owner_id:
+                            d["data"].add_temporal_property(ts_name, new_ts, self.hygraph)
+                            break
+
+
+
+def normalize_oid(raw_id):
+    try:
+        as_float = float(raw_id)
+        if as_float.is_integer():
+            return str(int(as_float))
+        return str(raw_id)
+    except (ValueError, TypeError):
+        return str(raw_id)
